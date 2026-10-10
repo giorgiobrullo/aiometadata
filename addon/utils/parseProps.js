@@ -15,6 +15,7 @@ const { getImdbRating } = require('../lib/getImdbRating');
 const consola = require('consola');
 const { cacheWrapMetaSmart, cacheWrapGlobal } = require('../lib/getCache');
 const { getReleaseAvailability } = require('./releaseAvailability');
+const { getBestBackground } = require('./bestBackground');
 const { classifyTmdbLocalization } = require('./tmdbLocalization');
 const { malRatingToCertification, isUnratedCertification } = require('./ageRating');
 const wikiMappings = require('../lib/wiki-mapper.js');
@@ -1679,7 +1680,17 @@ function getDefaultProvider(contentType) {
 async function getAnimeBg({ tvdbId, tmdbId, malId, imdbId, malPosterUrl, mediaType = 'series' }, config, isLandscape = false) {
   
   // logger.debug(`[getAnimeBg] Fetching background for ${mediaType} with TVDB ID: ${tvdbId}, TMDB ID: ${tmdbId}, MAL ID: ${malId}`);
-  const artProvider = resolveArtProvider('anime', 'background', config);
+  let artProvider = resolveArtProvider('anime', 'background', config);
+  // 'best' asks every provider and keeps the widest text-free background; landscape art may
+  // carry the title, so it, and a title no provider has a text-free background for, keeps
+  // the TMDB pick.
+  if (artProvider === 'best') {
+    if (!isLandscape) {
+      const best = await getBestBackground({ kind: mediaType === 'movie' ? 'movie' : 'series', tmdbId, tvdbId }, config).catch(() => null);
+      if (best) return best;
+    }
+    artProvider = 'tmdb';
+  }
   const mapping = malId ? idMapper.getMappingByMalId(malId) : null;
   // Check art provider preference
   
@@ -2867,7 +2878,17 @@ async function getMoviePoster({ tmdbId, tvdbId, imdbId, metaProvider, fallbackPo
  * Get movie background with art provider preference
  */
 async function getMovieBackground({ tmdbId, tvdbId, imdbId, metaProvider, fallbackBackgroundUrl, originalLanguage }, config, isLandscape = false) {
-  const artProvider = resolveArtProvider('movie', 'background', config);
+  let artProvider = resolveArtProvider('movie', 'background', config);
+  // 'best' asks every provider and keeps the widest text-free background; landscape art may
+  // carry the title, so it, and a title no provider has a text-free background for, keeps
+  // the TMDB pick.
+  if (artProvider === 'best') {
+    if (!isLandscape) {
+      const best = await getBestBackground({ kind: 'movie', tmdbId, tvdbId }, config).catch(() => null);
+      if (best) return best;
+    }
+    artProvider = 'tmdb';
+  }
   
   if (artProvider === 'tvdb' && metaProvider != 'tvdb') {
     try {
@@ -3209,7 +3230,17 @@ async function getSeriesPoster({ tmdbId, tvdbId, imdbId, metaProvider, fallbackP
  * Get series background with art provider preference
  */
 async function getSeriesBackground({ tmdbId, tvdbId, imdbId, metaProvider, fallbackBackgroundUrl, originalLanguage }, config, isLandscape = false) {
-  const artProvider = resolveArtProvider('series', 'background', config);
+  let artProvider = resolveArtProvider('series', 'background', config);
+  // 'best' asks every provider and keeps the widest text-free background; landscape art may
+  // carry the title, so it, and a title no provider has a text-free background for, keeps
+  // the TMDB pick.
+  if (artProvider === 'best') {
+    if (!isLandscape) {
+      const best = await getBestBackground({ kind: 'series', tmdbId, tvdbId }, config).catch(() => null);
+      if (best) return best;
+    }
+    artProvider = 'tmdb';
+  }
   
   if (artProvider === 'tvdb' && metaProvider != 'tvdb') {
     try {

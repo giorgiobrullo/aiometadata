@@ -229,17 +229,17 @@ export interface AppConfig {
   artProviders: {
     movie: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb' | {
       poster: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
-      background: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
+      background: 'meta' | 'best' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
       logo: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
     };
     series: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb' | {
       poster: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
-      background: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
+      background: 'meta' | 'best' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
       logo: 'meta' | 'tmdb' | 'tvdb' | 'fanart' | 'imdb';
     };
     anime: 'meta' | 'mal' | 'anilist' | 'tvdb' | 'fanart' | 'imdb' | {
       poster: 'meta' | 'mal' | 'anilist' | 'tvdb' | 'fanart' | 'imdb';
-      background: 'meta' | 'mal' | 'anilist' | 'tvdb' | 'fanart' | 'imdb';
+      background: 'meta' | 'best' | 'mal' | 'anilist' | 'tvdb' | 'fanart' | 'imdb';
       logo: 'meta' | 'mal' | 'anilist' | 'tvdb' | 'fanart' | 'imdb';
     };
     englishArtOnly: boolean;
