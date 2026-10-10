@@ -50,9 +50,15 @@ const ANIME_LOGO: ArtProviderOption[] = [
   { value: 'fanart', label: 'Fanart.tv' },
 ];
 
+// Asks every provider and keeps the widest text-free background (addon/utils/bestBackground.js).
+const BEST_BACKGROUND: ArtProviderOption = {
+  value: 'best',
+  label: 'Best available (widest text-free from TMDB, TheTVDB, Fanart.tv)',
+};
+
 export function getOptions(contentType: ContentType, artType: ArtType): ArtProviderOption[] {
-  if (contentType !== 'anime') return MOVIE_AND_SERIES;
-  if (artType === 'background') return ANIME_BACKGROUND;
+  if (contentType !== 'anime') return artType === 'background' ? [BEST_BACKGROUND, ...MOVIE_AND_SERIES] : MOVIE_AND_SERIES;
+  if (artType === 'background') return [BEST_BACKGROUND, ...ANIME_BACKGROUND];
   if (artType === 'logo') return ANIME_LOGO;
   return ANIME_POSTER;
 }
