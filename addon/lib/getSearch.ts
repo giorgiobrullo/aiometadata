@@ -78,6 +78,67 @@ const findArtwork = (artworks: any[], type: number, lang: string | null, config:
     || artworks?.find((a: any) => a.type === type)?.image;
 };
 
+/**
+ * A TVDB search result as a Stremio meta, from what /search returns: the light counterpart of
+ * parseTvdbSearchResult, which needs the extended record. No logo, runtime, genres or
+ * certification, which a result list does not show and the full meta brings when it is opened.
+ */
+async function parseTvdbSearchResultLight(type: string, result: any, language: string, config: any): Promise<any> {
+  const tvdbId = String(result?.tvdb_id || '').replace(/^\D+-/, '');
+  if (!tvdbId || !result?.name) return null;
+
+  const langCode3 = await to3LetterCode(language, config);
+  const langChain = tvdbLanguageChain(langCode3);
+  // /search keys translations by language code, where the extended record lists objects.
+  const nameTranslations = Object.entries(result.translations || {}).map(([lang, name]) => ({ language: lang, name }));
+  const overviewTranslations = Object.entries(result.overviews || {}).map(([lang, overview]) => ({ language: lang, overview }));
+  const translatedName = pickTranslation(nameTranslations, langChain, 'name') || result.name;
+  const overview = pickTranslation(overviewTranslations, langChain, 'overview') || result.overview;
+
+  const remoteId = (sourceName: string) => result.remote_ids?.find((id: any) => id.sourceName === sourceName)?.id;
+  let allIds: any = {
+    tmdbId: remoteId('TheMovieDB.com'),
+    imdbId: remoteId('IMDB'),
+    tvmazeId: remoteId('TV Maze'),
+    tvdbId,
+  };
+  allIds = await resolveAllIds(`tvdb:${tvdbId}`, type, config, allIds, ['imdb']);
+  const imdbId = allIds?.imdbId;
+  const tmdbId = allIds?.tmdbId;
+
+  const fallbackImage = `${host}/missing_poster.png`;
+  const rawPosterUrl = typeof result.image_url === 'string' && result.image_url.startsWith('http') ? result.image_url : null;
+  const posterUrl = rawPosterUrl || fallbackImage;
+  let posterProxyId: string = `tvdb:${tvdbId}`;
+  if (config.posterRatingProvider === 'top' && (imdbId || tmdbId)) {
+    posterProxyId = imdbId || `tmdb:${tmdbId}`;
+  }
+
+  const firstAired = result.first_air_time || null;
+  const released = firstAired ? new Date(firstAired) : undefined;
+
+  return {
+    id: imdbId || `tvdb:${tvdbId}`,
+    type,
+    name: translatedName,
+    poster: Utils.isPosterRatingEnabled(config) ? Utils.buildPosterProxyUrl(host, type, posterProxyId, posterUrl, language, config) : posterUrl,
+    _rawPosterUrl: rawPosterUrl,
+    year: result.year,
+    releaseInfo: result.year || '',
+    released: released && !isNaN(released.getTime()) ? released : undefined,
+    description: Utils.addMetaProviderAttribution(overview, 'TVDB', config),
+    certification: null,
+    app_extras: { certification: null, certificationLocal: null },
+    genres: [],
+    imdbRating: imdbId ? await getImdbRating(imdbId, type) : 'N/A',
+    _tmdbId: tmdbId ? String(tmdbId) : undefined,
+    _tvdbId: tvdbId,
+    status: result.status,
+    aliases: result.aliases || [],
+    translations: nameTranslations.map(t => t.name as string),
+  };
+}
+
 async function parseTvdbSearchResult(type: string, extendedRecord: any, language: string, config: any): Promise<any> {
   if (!extendedRecord || !extendedRecord.id || !extendedRecord.name) return null;
 
@@ -1659,6 +1720,32 @@ async function performTvdbSearch(type: string, query: string, language: string, 
     logger.info('No unique TVDB IDs found after initial search.');
     return [];
   }
+
+  // A light search answers from the search results alone, like the TMDB one does. Fetching
+  // the extended record of every result (20 to 25 of them) made a series search take 0.8 to
+  // 1.1 s against the 0.2 to 0.35 s of TVDB's own search; the results already carry the name,
+  // its translations, year, poster, overview, status and the IMDb and TMDB ids a list shows.
+  const light = config._searchLight === true
+    && !hasAgeRatingCap(config)
+    && !(type === 'movie' && config.hideUnreleasedDigitalSearch);
+  if (light) {
+    const seen = new Set<string>();
+    const lightResults = (await Promise.all((titleResults || [])
+      .filter((result: any) => {
+        const resultId = String(result.tvdb_id || result.id || '');
+        if (!resultId || seen.has(resultId)) return false;
+        seen.add(resultId);
+        return true;
+      })
+      .map((result: any) => parseTvdbSearchResultLight(type, result, language, config).catch((error: any) => {
+        logger.debug(`Light TVDB result ${result.tvdb_id} failed: ${error.message}`);
+        return null;
+      }))))
+      .filter(Boolean);
+    logger.info(`TVDB light search results completed in ${Date.now() - searchStartTime}ms`);
+    return Utils.sortTvdbSearchResults(lightResults, sanitizedQuery);
+  }
+
   logger.debug(`Found ${uniqueIds.length} unique TVDB IDs to fetch details for.`);
 
   const detailPromises = uniqueIds.map((id: string) => {
