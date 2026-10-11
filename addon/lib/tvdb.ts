@@ -791,24 +791,41 @@ async function _fetchEpisodesBySeasonType(tvdbId: string, seasonType: string, la
 
   const langCode3 = await to3LetterCode(language, config);
   
-  let allEpisodes: TvdbEpisode[] = [];
-  let page = 0;
-  let hasNextPage = true;
-
-  while(hasNextPage) {
+  const fetchPage = async (page: number): Promise<any> => {
     const url = `${TVDB_API_URL}/series/${tvdbId}/episodes/${seasonType}/${langCode3}?page=${page}`;
     try {
       const response = await tvdbHttpRequest(url, { headers: { 'Authorization': `Bearer ${token}` } });
-      const data = response.data as any;
-      if (data.data && data.data.episodes) {
-        allEpisodes.push(...data.data.episodes);
-      }
-      hasNextPage = data.links && data.links.next;
-      page++;
+      return response.data as any;
     } catch(error) {
       logger.error(`[_fetchEpisodesBySeasonType] Error fetching page ${page} of ${seasonType} episodes for TVDB ID ${tvdbId}:`, (error as Error).message);
       throw error;
     }
+  };
+  const episodesOf = (data: any): TvdbEpisode[] => data?.data?.episodes || [];
+
+  const first = await fetchPage(0);
+  const allEpisodes: TvdbEpisode[] = [...episodesOf(first)];
+  if (!first?.links?.next) return { episodes: allEpisodes };
+
+  // A page holds 500 episodes. When the first one says how many there are, the rest are asked
+  // for together (a long-running show has two or three pages, each a round trip to TheTVDB),
+  // and appended in page order; otherwise they are followed one by one, as the links say.
+  const totalItems = Number(first.links.total_items);
+  const pageSize = Number(first.links.page_size);
+  if (totalItems > 0 && pageSize > 0) {
+    const pageCount = Math.ceil(totalItems / pageSize);
+    const rest = await Promise.all(Array.from({ length: pageCount - 1 }, (_, i) => fetchPage(i + 1)));
+    for (const data of rest) allEpisodes.push(...episodesOf(data));
+    return { episodes: allEpisodes };
+  }
+
+  let page = 1;
+  let hasNextPage = true;
+  while (hasNextPage) {
+    const data = await fetchPage(page);
+    allEpisodes.push(...episodesOf(data));
+    hasNextPage = !!data?.links?.next;
+    page++;
   }
   return { episodes: allEpisodes };
 }
