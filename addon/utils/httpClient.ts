@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later WITH AdditionRef-AIOMetadata-FSL-linking
 // Copyright (C) 2021-2026 cedya77 and AIOMetadata contributors, see NOTICE
 const net = require('node:net');
+const zlib = require('node:zlib');
+const { promisify } = require('node:util');
 const { request, Agent, setGlobalDispatcher, ProxyAgent } = require("undici");
 const buildInfo = require('../lib/buildInfo');
 const { withRetries, isRetryableNetworkError } = require('./retry');
@@ -47,6 +49,46 @@ const bootstrapDispatcher = proxyUrl
 /** Spread into startup downloads that must survive a transient network blip. */
 export const BOOTSTRAP_HTTP_OPTIONS = { retryAttempts: 3, dispatcher: bootstrapDispatcher };
 
+/**
+ * undici's request() neither asks for a compressed response nor decodes one (fetch does both),
+ * so every API answered in plain text: TheTVDB's series record for a long show is 170 to 250 KB
+ * uncompressed and took 160 to 320 ms to download after its headers, more than the request
+ * itself. Asked for gzip, br or deflate, it is 22 to 28 KB and arrives with its headers.
+ */
+const ACCEPT_ENCODING = 'gzip, br, deflate';
+
+const gunzip = promisify(zlib.gunzip);
+const brotliDecompress = promisify(zlib.brotliDecompress);
+const inflate = promisify(zlib.inflate);
+
+// maxOutputLength keeps a capped request capped after decoding too (zlib throws past it).
+const decoders: Record<string, (buffer: Buffer, maxOutputLength?: number) => Promise<Buffer>> = {
+  gzip: (b, max) => gunzip(b, max ? { maxOutputLength: max } : {}),
+  'x-gzip': (b, max) => gunzip(b, max ? { maxOutputLength: max } : {}),
+  br: (b, max) => brotliDecompress(b, max ? { maxOutputLength: max } : {}),
+  deflate: (b, max) => inflate(b, max ? { maxOutputLength: max } : {}),
+};
+
+/** The response body as text, decoded from the Content-Encoding the server chose. */
+async function readBodyText(body: any, responseHeaders: Record<string, string>, maxBytes?: number): Promise<string> {
+  const encoding = String(responseHeaders['content-encoding'] || '').trim().toLowerCase();
+  const decode = decoders[encoding];
+  if (!maxBytes) {
+    if (!decode) return body.text();
+    const raw = Buffer.from(await body.arrayBuffer());
+    return (await decode(raw)).toString('utf8');
+  }
+  // The cap applies to what is read off the wire and again to the decoded text.
+  const raw = await readCappedBuffer(body, maxBytes, responseHeaders);
+  if (!decode) return raw.toString('utf8');
+  try {
+    return (await decode(raw, maxBytes)).toString('utf8');
+  } catch (err: any) {
+    if (err?.code === 'ERR_BUFFER_TOO_LARGE' || err instanceof RangeError) throw new ResponseTooLarge(maxBytes);
+    throw err;
+  }
+}
+
 interface HttpRequestOptions {
   method?: string;
   data?: any;
@@ -87,6 +129,10 @@ export class ResponseTooLarge extends Error {
 
 /** A body read as text, stopping once it passes `maxBytes`. */
 export async function readCappedBody(body: any, maxBytes: number, headers: Record<string, any> = {}): Promise<string> {
+  return (await readCappedBuffer(body, maxBytes, headers)).toString('utf8');
+}
+
+async function readCappedBuffer(body: any, maxBytes: number, headers: Record<string, any> = {}): Promise<Buffer> {
   const declared = Number(headers['content-length']);
   if (Number.isFinite(declared) && declared > maxBytes) {
     body.destroy?.();
@@ -102,7 +148,7 @@ export async function readCappedBody(body: any, maxBytes: number, headers: Recor
     }
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 
 export async function httpRequest(url: string, options: HttpRequestOptions = {}): Promise<HttpResponse> {
@@ -128,6 +174,7 @@ export async function httpRequest(url: string, options: HttpRequestOptions = {})
     method,
     headers: {
       'User-Agent': `AIOMetadata/${buildInfo.version}`,
+      'Accept-Encoding': ACCEPT_ENCODING,
       ...headers
     },
     bodyTimeout: timeout,
@@ -169,7 +216,7 @@ export async function httpRequest(url: string, options: HttpRequestOptions = {})
       };
     }
 
-    const text = maxBytes ? await readCappedBody(body, maxBytes, responseHeaders) : await body.text();
+    const text = await readBodyText(body, responseHeaders, maxBytes);
     const responseData = contentType.includes('application/json')
       ? (text ? JSON.parse(text) : null)
       : text;
@@ -192,7 +239,7 @@ export async function httpRequest(url: string, options: HttpRequestOptions = {})
     };
     throw error;
   } else {
-    const errorText = maxBytes ? await readCappedBody(body, maxBytes, responseHeaders) : await body.text();
+    const errorText = await readBodyText(body, responseHeaders, maxBytes);
     noteTrackerCall(url, statusCode, errorText, responseHeaders['retry-after']);
     const error: HttpError = new Error(`Request failed with status code ${statusCode}`);
     error.response = {
