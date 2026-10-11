@@ -46,7 +46,8 @@ async function getBestSeriesBackground(tvdbId: string, config: any): Promise<str
   const cacheKey = `fanart-api:series-background:${tvdbId}`;
   return cacheWrapGlobal(cacheKey, async () => {
     try {
-      const images = await fanartClient.getShowImages(tvdbId);
+      const images = await getShowImages(tvdbId, config);
+      if (!images) return null;
 
       if (!images.showbackground || images.showbackground.length === 0) {
         return null;
@@ -74,7 +75,8 @@ async function getBestMovieBackground(tmdbId: string, config: any): Promise<stri
   const cacheKey = `fanart-api:movie-background:${tmdbId}`;
   return cacheWrapGlobal(cacheKey, async () => {
     try {
-      const images = await fanartClient.getMovieImages(tmdbId);
+      const images = await getMovieImages(tmdbId, config);
+      if (!images) return null;
       if (!images.moviebackground || images.moviebackground.length === 0) {
         return null;
       }
@@ -92,6 +94,7 @@ async function getBestMovieBackground(tmdbId: string, config: any): Promise<stri
   }, 7 * 24 * 60 * 60);
 }
 
+/** A movie's whole Fanart.tv record, cached and shared like getShowImages. */
 async function getMovieImages(tmdbId: string, config: any): Promise<any | null> {
   const fanartClient = getFanartClient(config);
   if (!fanartClient || !tmdbId) {
@@ -120,7 +123,8 @@ async function getBestMoviePoster(tmdbId: string, config: any): Promise<string |
   const cacheKey = `fanart-api:movie-poster:${tmdbId}`;
   return cacheWrapGlobal(cacheKey, async () => {
     try {
-      const images = await fanartClient.getMovieImages(tmdbId);
+      const images = await getMovieImages(tmdbId, config);
+      if (!images) return null;
       if (!images.movieposter || images.movieposter.length === 0) {
         return null;
       }
@@ -147,7 +151,8 @@ async function getBestMovieLogo(tmdbId: string, config: any): Promise<string | n
   const cacheKey = `fanart-api:movie-logo:${tmdbId}`;
   return cacheWrapGlobal(cacheKey, async () => {
     try {
-      const images = await fanartClient.getMovieImages(tmdbId);
+      const images = await getMovieImages(tmdbId, config);
+      if (!images) return null;
       if (!images.hdmovielogo || images.hdmovielogo.length === 0) {
         return null;
       }
@@ -174,7 +179,8 @@ async function getBestSeriesPoster(tvdbId: string, config: any): Promise<string 
   const cacheKey = `fanart-api:series-poster:${tvdbId}`;
   return cacheWrapGlobal(cacheKey, async () => {
     try {
-      const images = await fanartClient.getShowImages(tvdbId);
+      const images = await getShowImages(tvdbId, config);
+      if (!images) return null;
       if (!images.tvposter || images.tvposter.length === 0) {
         return null;
       }
@@ -201,7 +207,8 @@ async function getBestTVLogo(tvdbId: string, config: any): Promise<string | null
   const cacheKey = `fanart-api:series-logo:${tvdbId}`;
   return cacheWrapGlobal(cacheKey, async () => {
     try {
-      const images = await fanartClient.getShowImages(tvdbId);
+      const images = await getShowImages(tvdbId, config);
+      if (!images) return null;
       if (!images.hdtvlogo || images.hdtvlogo.length === 0) {
         return null;
       }
@@ -219,6 +226,12 @@ async function getBestTVLogo(tvdbId: string, config: any): Promise<string | null
   }, 7 * 24 * 60 * 60);
 }
 
+/**
+ * A show's whole Fanart.tv record, cached and shared: the poster, logo and background pickers
+ * above each used to fetch it under their own cache key, so a cold series asked Fanart.tv for
+ * the same record up to four times (with getBestBackground). They read it from here now, and
+ * concurrent callers wait for the one request in flight.
+ */
 async function getShowImages(tvdbId: string, config: any): Promise<any | null> {
   const fanartClient = getFanartClient(config);
   if (!fanartClient || !tvdbId) {
