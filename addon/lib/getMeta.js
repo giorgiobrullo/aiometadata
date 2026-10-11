@@ -416,6 +416,11 @@ async function getMeta(type, language, stremioId, config = {}, userUUID, include
           return ['imdb'];
         case 'tvmaze':
           return ['tvmaze'];
+        case 'best':
+          // getBestBackground asks TMDB, TheTVDB and Fanart.tv (TMDB or IMDb id for a movie,
+          // TheTVDB id for a series): resolved here with the rest, or it resolves them itself,
+          // one lookup after another, before its first image request.
+          return contentType === 'movie' ? ['tmdb', 'imdb', 'tvdb'] : ['tmdb', 'tvdb'];
         default:
           // For unknown art providers, return empty array
           return [];
@@ -894,20 +899,16 @@ async function getSeriesMeta(preferredProvider, stremioId, language, config, use
   // Try TVDB as fallback
   if (allIds?.tvdbId) {
     try {
-      let [seriesData, episodes] = await Promise.all([
-        tvdb.getSeriesExtended(allIds.tvdbId, config),
-        includeVideos ? tvdb.getSeriesEpisodes(allIds.tvdbId, language, config.tvdbSeasonType, config) : null
-      ]);
+      let episodes = startTvdbEpisodes(allIds.tvdbId, language, config, includeVideos);
+      let seriesData = await tvdb.getSeriesExtended(allIds.tvdbId, config);
 
       if (!seriesData && allIds?.imdbId) {
         const recoveredId = await recoverTvdbIdViaImdb(allIds.imdbId, 'series', config, allIds.tvdbId);
         if (recoveredId) {
           logger.warn(`[SeriesMeta] TVDB id ${allIds.tvdbId} returned no data for ${stremioId}; recovered ${recoveredId} via IMDb ${allIds.imdbId}.`);
           allIds.tvdbId = recoveredId;
-          [seriesData, episodes] = await Promise.all([
-            tvdb.getSeriesExtended(recoveredId, config),
-            includeVideos ? tvdb.getSeriesEpisodes(recoveredId, language, config.tvdbSeasonType, config) : null
-          ]);
+          episodes = startTvdbEpisodes(recoveredId, language, config, includeVideos);
+          seriesData = await tvdb.getSeriesExtended(recoveredId, config);
         }
       }
 
@@ -1021,19 +1022,15 @@ async function getAnimeMeta(preferredProvider, stremioId, language, config, user
       }
       if (preferredProvider === 'tvdb' && allIds?.tvdbId) {
         if (type === 'series') {
-          let [seriesData, episodes] = await Promise.all([
-            tvdb.getSeriesExtended(allIds.tvdbId, config),
-            includeVideos ? tvdb.getSeriesEpisodes(allIds.tvdbId, language, config.tvdbSeasonType, config) : null
-          ]);
+          let episodes = startTvdbEpisodes(allIds.tvdbId, language, config, includeVideos);
+          let seriesData = await tvdb.getSeriesExtended(allIds.tvdbId, config);
           if (!seriesData && allIds?.imdbId) {
             const recoveredId = await recoverTvdbIdViaImdb(allIds.imdbId, 'series', config, allIds.tvdbId);
             if (recoveredId) {
               logger.warn(`[AnimeMeta] TVDB id ${allIds.tvdbId} returned no data for ${stremioId}; recovered ${recoveredId} via IMDb ${allIds.imdbId}.`);
               allIds.tvdbId = recoveredId;
-              [seriesData, episodes] = await Promise.all([
-                tvdb.getSeriesExtended(recoveredId, config),
-                includeVideos ? tvdb.getSeriesEpisodes(recoveredId, language, config.tvdbSeasonType, config) : null
-              ]);
+              episodes = startTvdbEpisodes(recoveredId, language, config, includeVideos);
+              seriesData = await tvdb.getSeriesExtended(recoveredId, config);
             }
           }
           if (!seriesData) {
@@ -2264,6 +2261,22 @@ function normalizeTvdbSeasons(seasons, episodes) {
 
 
 
+/**
+ * Starts fetching a TVDB series' episodes without waiting for them. The episodes come one page
+ * after another and only the videos are built from them: the artwork, ratings and TMDB details of
+ * the series need the series record alone, so buildTvdbSeriesResponse takes the episodes as a
+ * promise and waits for it where the videos are built. Awaiting both up front made every cold
+ * series meta wait for the last episodes page before its first artwork request went out.
+ * A failure surfaces where the promise is awaited; a promise that is never awaited (the series
+ * id turned out wrong) does not report an unhandled rejection.
+ */
+function startTvdbEpisodes(tvdbId, language, config, includeVideos) {
+  if (!includeVideos) return Promise.resolve(null);
+  const episodes = tvdb.getSeriesEpisodes(tvdbId, language, config.tvdbSeasonType, config);
+  episodes.catch(() => {});
+  return episodes;
+}
+
 async function buildTvdbSeriesResponse(stremioId, tvdbShow, tvdbEpisodes, language, config, userUUID, enrichmentData = {}, isAnime = false, includeVideos = true) {
   const { year, image: tvdbPosterPath, remoteIds, characters, episodes } = tvdbShow;
   const { allIds } = enrichmentData;
@@ -2290,6 +2303,13 @@ async function buildTvdbSeriesResponse(stremioId, tvdbShow, tvdbEpisodes, langua
   const malId = allIds?.malId;
   const castCount = config.castCount;
   imdbId = imdbId || tvdbShow.remoteIds?.find(id => id.sourceName === 'IMDB')?.id
+
+  // The TMDB details (content ratings, keywords) need only the TMDB id: asked for now, alongside
+  // the artwork, instead of after it, the episodes and the logo fallback.
+  const tmdbSeriesDetails = tmdbId
+    ? moviedb.tvInfo({ id: String(tmdbId), append_to_response: 'content_ratings,keywords' }, config)
+    : Promise.resolve(null);
+  tmdbSeriesDetails.catch(() => {});
 
   // Get artwork based on art provider preference
   const tvdbPosterUrl = findArtwork(tvdbShow.artworks, 2, langCode3, config) || `${host}/missing_poster.png`;
@@ -2387,7 +2407,7 @@ async function buildTvdbSeriesResponse(stremioId, tvdbShow, tvdbEpisodes, langua
     .filter(s => s.type?.type === 'official')
     .sort((a, b) => a.number - b.number);
     
-  let episodeList = tvdbEpisodes?.episodes || [];
+  let episodeList = (await tvdbEpisodes)?.episodes || [];
 
   const normalizedData = normalizeTvdbSeasons(officialSeasons, episodeList);
   officialSeasons = normalizedData.seasons;
@@ -2570,7 +2590,7 @@ async function buildTvdbSeriesResponse(stremioId, tvdbShow, tvdbEpisodes, langua
   let tmdbKeywords;
   if (tmdbId) {
     try {
-      const tmdbSeries = await moviedb.tvInfo({ id: String(tmdbId), append_to_response: 'content_ratings,keywords' }, config);
+      const tmdbSeries = await tmdbSeriesDetails;
       tmdbKeywords = moviedb.keywordNamesOf(tmdbSeries);
       const contentRatingsData = tmdbSeries?.content_ratings;
       if (contentRatingsData) {
